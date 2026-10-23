@@ -17,7 +17,7 @@
 
 local PLUGIN_NAME = "Pinger"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.1.0"
+helpers.VERSION = "0.1.1"
 local H = helpers
 
 -------------------------------------------------------------------------------
@@ -545,6 +545,11 @@ local function openPicker(t)
     refresh()
 end
 local function closePicker() view = "list"; pickFor = nil; stopAll(); refresh() end
+-- X in the title bar closes only the sound picker while it is open.
+helpers.onCloseSub = function()
+    if view == "pick" then closePicker(); return true end
+    return false
+end
 
 local function L(c) C.list[#C.list + 1] = c; return c end
 local function P(c) C.pick[#C.pick + 1] = c; return c end
@@ -706,7 +711,7 @@ local function buildPanel(root)
 
     -- picker view -------------------------------------------------------------
     pBack = P(helpers.button(root, 0, 0, 64, H.BTN_H, "Back", closePicker))
-    helpers.setTip(pBack, "Back to the trigger list.")
+    helpers.setTip(pBack, "Back to the trigger list (the X button does the same while the picker is open).")
     pSearch = P(helpers.input(root, 0, 0, 200, H.BTN_H, "Search sound name or id"))
     helpers.safe(function() pSearch:SetSize(-(2 * COL_PAD + 64 + GAP), H.BTN_H, 1.0, 0.0) end)
     helpers.setTip(pSearch, "Filter the game's sounds by name or exact id.")

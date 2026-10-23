@@ -626,6 +626,13 @@ function helpers.createWindow(name, width, height, xPct, yPct)
         win.minBtn = minBtn
         -- Close: hides panel and icon; the ribbon "Show panel" brings it back.
         local closeBtn = helpers.button(box, 0, 3, 20, 18, "X", function()
+            -- 2026-10-23 (added): a plugin with a sub-menu open can set
+            -- helpers.onCloseSub = function() ... return true end so X closes
+            -- just that sub-menu. Nil by default: no change for other plugins.
+            if helpers.onCloseSub ~= nil then
+                local okSub, used = pcall(helpers.onCloseSub)
+                if okSub and used == true then return end
+            end
             win.state.closed = true
             saveWinState()
             applyCollapsed()

@@ -17,7 +17,7 @@
 
 local PLUGIN_NAME = "Pinger"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.1.4"
+helpers.VERSION = "0.1.5"
 local H = helpers
 
 -------------------------------------------------------------------------------
@@ -269,13 +269,27 @@ local PANEL_W = 600
 local COL_PAD, GAP = 8, 6
 local ROWS = 8
 local ON_W, MATCH_W, CHAN_W, SOUND_W, TEST_W, DEL_W = 40, 84, 112, 150, 40, 24
-local DEL_X   = -(COL_PAD + DEL_W)
-local TEST_X  = DEL_X - GAP - TEST_W
-local SOUND_X = TEST_X - GAP - SOUND_W
-local CHAN_X  = SOUND_X - GAP - CHAN_W
-local MATCH_X = CHAN_X - GAP - MATCH_W
-local TRIG_X  = COL_PAD + ON_W + GAP
-local TRIG_W  = MATCH_X - GAP - TRIG_X     -- negative: fill minus this
+local DEL_X, TEST_X, SOUND_X, CHAN_X, MATCH_X, TRIG_X, TRIG_W
+local P_USE_W, P_ID_W = 44, 48
+local P_USE_X, P_ID_X
+-- 0.1.5: adjustable columns (shared helpers.columns). Match, Channels and
+-- Sound (trigger list) and ID (picker) are resizable; Trigger / Sound name fill.
+local cols, pcols = nil, nil
+local handles, pHandle = {}, nil
+local function recalcCols()
+    if cols ~= nil then MATCH_W, CHAN_W, SOUND_W = cols:get("match"), cols:get("chan"), cols:get("sound") end
+    if pcols ~= nil then P_ID_W = pcols:get("id") end
+    DEL_X   = -(COL_PAD + DEL_W)
+    TEST_X  = DEL_X - GAP - TEST_W
+    SOUND_X = TEST_X - GAP - SOUND_W
+    CHAN_X  = SOUND_X - GAP - CHAN_W
+    MATCH_X = CHAN_X - GAP - MATCH_W
+    TRIG_X  = COL_PAD + ON_W + GAP
+    TRIG_W  = MATCH_X - GAP - TRIG_X     -- negative: fill minus this
+    P_USE_X = -(COL_PAD + P_USE_W)
+    P_ID_X  = P_USE_X - GAP - P_ID_W
+end
+recalcCols()
 local BG = { { 0x24/255, 0x21/255, 0x1E/255 }, { 0x2E/255, 0x2A/255, 0x26/255 } }
 local SEL = { 0x5A/255, 0x4A/255, 0x2A/255 }
 local function tw(s) return helpers.textWidthOf(H.FONT, s) or (#s * 7) end
@@ -325,9 +339,6 @@ local pSearch, pBack, pStatus, pHead, pDiv, pBg, pBgs, pRows = nil, nil, nil, {}
 local pPrev, pNext, pPageLbl, pPageBox, pPageOf
 local pFilter, pFiltered, pLastSeen = "", {}, nil
 local PROWS = 12
-local P_USE_W, P_ID_W = 44, 48
-local P_USE_X = -(COL_PAD + P_USE_W)
-local P_ID_X = P_USE_X - GAP - P_ID_W
 
 local function ownLabel() return state.ignoreOwn and "Ignore own: On" or "Ignore own: Off" end
 local function busLabel() return "Bus: " .. state.bus end
@@ -443,6 +454,8 @@ local function layout()
     local isList = view == "list"
     helpers.setHidden(C.list, not isList)
     helpers.setHidden(C.pick, isList)
+    for _, h in pairs(handles) do h:setHidden(not isList) end
+    if pHandle then pHandle:setHidden(isList) end
     if isList then
         helpers.safe(function() statusText:SetPos(COL_PAD, y) end); y = y + H.ROW_HEIGHT
         helpers.safe(function() permText:SetPos(COL_PAD, y) end); y = y + H.ROW_HEIGHT + 4
@@ -455,7 +468,15 @@ local function layout()
             head.match:SetPos(MATCH_X, y, 1.0, 0.0); head.chan:SetPos(CHAN_X, y, 1.0, 0.0)
             head.sound:SetPos(SOUND_X, y, 1.0, 0.0); head.test:SetPos(TEST_X, y, 1.0, 0.0)
             head.del:SetPos(DEL_X, y, 1.0, 0.0)
+            head.text:SetSize(TRIG_W, H.ROW_HEIGHT, 1.0, 0.0)
+            head.match:SetSize(MATCH_W, H.ROW_HEIGHT); head.chan:SetSize(CHAN_W, H.ROW_HEIGHT)
+            head.sound:SetSize(SOUND_W, H.ROW_HEIGHT)
         end)
+        if handles.match then
+            handles.match:place(MATCH_X - GAP // 2, y, H.ROW_HEIGHT, 1.0, 0.0)
+            handles.chan:place(CHAN_X - GAP // 2, y, H.ROW_HEIGHT, 1.0, 0.0)
+            handles.sound:place(SOUND_X - GAP // 2, y, H.ROW_HEIGHT, 1.0, 0.0)
+        end
         y = y + H.ROW_HEIGHT
         helpers.safe(function() headDiv:SetPos(COL_PAD, y) end); y = y + 2
         helpers.safe(function() listBg:SetPos(4, y); listBg:SetSize(-8, ROWS * H.ROW_HEIGHT, 1.0, 0.0) end)
@@ -465,10 +486,10 @@ local function layout()
             helpers.safe(function()
                 rowBgs[r]:SetPos(4, y)
                 c.on:SetPos(COL_PAD, by)
-                c.text:SetPos(TRIG_X, y)
-                c.match:SetPos(MATCH_X, by, 1.0, 0.0)
-                c.chan:SetPos(CHAN_X, by, 1.0, 0.0)
-                c.sound:SetPos(SOUND_X, by, 1.0, 0.0)
+                c.text:SetPos(TRIG_X, y); c.text:SetSize(TRIG_W, H.ROW_HEIGHT, 1.0, 0.0)
+                c.match.w = MATCH_W; c.match:SetPos(MATCH_X, by, 1.0, 0.0)
+                c.chan.w = CHAN_W; c.chan:SetPos(CHAN_X, by, 1.0, 0.0)
+                c.sound:SetSize(SOUND_W, H.BTN_H); c.sound:SetPos(SOUND_X, by, 1.0, 0.0)
                 c.test:SetPos(TEST_X, by, 1.0, 0.0)
                 c.del:SetPos(DEL_X, by, 1.0, 0.0)
             end)
@@ -494,7 +515,9 @@ local function layout()
         helpers.safe(function() pStatus:SetPos(COL_PAD, y) end); y = y + H.ROW_HEIGHT
         helpers.safe(function()
             pHead.name:SetPos(COL_PAD, y); pHead.idt:SetPos(P_ID_X, y, 1.0, 0.0); pHead.use:SetPos(P_USE_X, y, 1.0, 0.0)
+            pHead.name:SetSize(P_ID_X - GAP - COL_PAD, H.ROW_HEIGHT, 1.0, 0.0); pHead.idt:SetSize(P_ID_W, H.ROW_HEIGHT)
         end)
+        if pHandle then pHandle:place(P_ID_X - GAP // 2, y, H.ROW_HEIGHT, 1.0, 0.0) end
         y = y + H.ROW_HEIGHT
         helpers.safe(function() pDiv:SetPos(COL_PAD, y) end); y = y + 2
         helpers.safe(function() pBg:SetPos(4, y); pBg:SetSize(-8, PROWS * H.ROW_HEIGHT, 1.0, 0.0) end)
@@ -503,6 +526,7 @@ local function layout()
             helpers.safe(function()
                 pBgs[r]:SetPos(4, y)
                 c.name:SetPos(COL_PAD, y); c.idt:SetPos(P_ID_X, y, 1.0, 0.0)
+                c.name:SetSize(P_ID_X - GAP - COL_PAD, H.ROW_HEIGHT, 1.0, 0.0); c.idt:SetSize(P_ID_W, H.ROW_HEIGHT)
                 c.use:SetPos(P_USE_X, y + 1, 1.0, 0.0)
             end)
             y = y + H.ROW_HEIGHT
@@ -600,6 +624,15 @@ local function buildPanel(root)
     local function hd(w, s, tip)
         local t = L(newText(root, w)); helpers.setText(t, H.gold(s)); helpers.setTip(t, tip); return t
     end
+    cols = helpers.columns("triggers", {
+        match = { w = 84, min = 64, max = 200 }, chan = { w = 112, min = 64, max = 240 },
+        sound = { w = 150, min = 60, max = 320 } }, function() recalcCols(); pcall(layout) end)
+    pcols = helpers.columns("picker", { id = { w = 48, min = 36, max = 160 } }, function() recalcCols(); pcall(layout) end)
+    recalcCols()
+    handles.match = cols:handle(root, "match", -1)
+    handles.chan = cols:handle(root, "chan", -1)
+    handles.sound = cols:handle(root, "sound", -1)
+    pHandle = pcols:handle(root, "id", -1)
     head.on = hd(ON_W, "On", "Turn a trigger on or off.")
     head.text = hd(TRIG_W, "Trigger", "What Pinger listens for. The first row is your own name, read from the game.")
     head.match = hd(MATCH_W, "Match", "Word: only whole words (\"bob\" won't match \"bobby\"). Contains: anywhere in the message.")

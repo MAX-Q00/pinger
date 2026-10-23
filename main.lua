@@ -17,7 +17,7 @@
 
 local PLUGIN_NAME = "Pinger"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.1.3"
+helpers.VERSION = "0.1.4"
 local H = helpers
 
 -------------------------------------------------------------------------------
@@ -268,7 +268,7 @@ end)
 local PANEL_W = 600
 local COL_PAD, GAP = 8, 6
 local ROWS = 8
-local ON_W, MATCH_W, CHAN_W, SOUND_W, TEST_W, DEL_W = 40, 70, 104, 150, 40, 24
+local ON_W, MATCH_W, CHAN_W, SOUND_W, TEST_W, DEL_W = 40, 84, 112, 150, 40, 24
 local DEL_X   = -(COL_PAD + DEL_W)
 local TEST_X  = DEL_X - GAP - TEST_W
 local SOUND_X = TEST_X - GAP - SOUND_W
@@ -371,8 +371,7 @@ bindRows = function()
             helpers.setText(c.on, t.on and "On" or "Off", "label")
             local label = isName and ("Your name" .. (myName and (" (" .. myName .. ")") or "")) or t.text
             helpers.setText(c.text, isName and H.gold(label) or (t.on and H.val(label) or H.lbl(label)))
-            helpers.setText(c.match, t.match == "contains" and "Contains" or "Word", "label")
-            helpers.setText(c.chan, FILTERS[t.chan] or "All", "label")
+            c.match:refresh(); c.chan:refresh()
             local _, sn = soundOf(t)
             helpers.setText(c.sound, sn, "label")
             helpers.safe(function()
@@ -625,18 +624,17 @@ local function buildPanel(root)
             if c.i == 1 then return "Your display name" .. (myName and (" (" .. myName .. ")") or "") .. ", matched without case. Spaces, underscores and the game's non-breaking space all match, and so does the name written without spaces." end
             return "Trigger \"" .. t.text .. "\"."
         end)
-        c.match = L(helpers.button(root, 0, 0, MATCH_W, 18, "Word", function()
-            local t = cur(); if not t then return end
-            t.match = t.match == "word" and "contains" or "word"; save(); bindRows()
-        end))
-        helpers.setTip(c.match, "Click to switch between Word (whole words only) and Contains (anywhere, even inside other words).")
-        c.chan = L(helpers.button(root, 0, 0, CHAN_W, 18, "All", function()
-            local t = cur(); if not t then return end
-            t.chan = t.chan % #FILTERS + 1; save(); bindRows()
-        end))
-        helpers.setTip(c.chan, function()
-            return "Click to cycle: " .. table.concat(FILTERS, ", ") .. ". All also includes game and broadcast messages."
-        end)
+        -- 0.1.4: Match and Channels are RuneScape-style dropdowns (helpers.dropdown)
+        c.match = L(helpers.dropdown(root, 0, 0, MATCH_W, 18, { name = "pgMatch" .. r, options = { "Word", "Contains" },
+            get = function() local t = cur(); return (t and t.match == "contains") and 2 or 1 end,
+            set = function(i) local t = cur(); if t then t.match = i == 2 and "contains" or "word"; save() end end,
+            onChange = function() bindRows() end,
+            tip = "Word: whole words only. Contains: anywhere, even inside other words." }))
+        c.chan = L(helpers.dropdown(root, 0, 0, CHAN_W, 18, { name = "pgChan" .. r, options = FILTERS,
+            get = function() local t = cur(); return t and t.chan or 1 end,
+            set = function(i) local t = cur(); if t then t.chan = i; save() end end,
+            onChange = function() bindRows() end,
+            tip = function() return "Which chat this trigger listens to: " .. table.concat(FILTERS, ", ") .. ". All also includes game and broadcast messages." end }))
         c.sound = L(helpers.button(root, 0, 0, SOUND_W, 18, "-", function()
             local t = cur(); if t then openPicker(t) end
         end))
@@ -680,14 +678,12 @@ local function buildPanel(root)
         for _, b in ipairs(busList()) do if b == state.bus then ok = true end end
         if not ok then state.bus = "MASTER" end
     end
-    busBtn = L(helpers.button(root, 0, 0, 120, H.BTN_H, busLabel(), function()
-        local Lb = busList(); if #Lb == 0 then return end
-        local k = 1
-        for i, b in ipairs(Lb) do if b == state.bus then k = i end end
-        state.bus = Lb[k % #Lb + 1]; save(); helpers.setText(busBtn, busLabel(), "label")
-    end))
-    helpers.setTip(busBtn, function()
-        return "Audio bus for alerts: " .. state.bus .. ". MASTER follows only the master volume; SFX, MUSIC, AMBIENT and VOICEOVER follow their own sliders; the *_SUB buses may be silent. Alerts always play at full volume, because the game mutes anything lower. Click to cycle."
+    busBtn = L(helpers.dropdown(root, 0, 0, 140, H.BTN_H, { name = "pgBus",
+        options = function() local Lb = {}; for i, b in ipairs(busList()) do Lb[i] = "Bus: " .. b end; return Lb end,
+        get = function() for i, b in ipairs(busList()) do if b == state.bus then return i end end; return 1 end,
+        set = function(i) local Lb = busList(); if Lb[i] then state.bus = Lb[i]; save() end end }))
+    helpers.setTip(busBtn.box, function()
+        return "Audio bus for alerts: " .. state.bus .. ". MASTER follows only the master volume; SFX, MUSIC, AMBIENT and VOICEOVER follow their own sliders; the *_SUB buses may be silent. Alerts always play at full volume, because the game mutes anything lower."
     end)
     stopBtn = L(helpers.button(root, 0, 0, 64, H.BTN_H, "Stop", function() stopAll() end))
     helpers.setTip(stopBtn, "Stop any alert that is still playing.")

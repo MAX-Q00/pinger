@@ -1,11 +1,15 @@
 {
   "name": "Pinger",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "contactEmailAddress": "Dylan@quspace.agency",
   "requiredDependencies": {},
   "optionalDependencies": {},
-  "requiredPermissions": [],
-  "optionalPermissions": ["chatAccess"],
+  "requiredPermissions": [
+    "chatAccess"
+  ],
+  "optionalPermissions": [
+    "chatAccess"
+  ],
   "dependencies": {},
   "hasRibbonIcon": true
 }

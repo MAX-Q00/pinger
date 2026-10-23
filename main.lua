@@ -17,7 +17,7 @@
 
 local PLUGIN_NAME = "Pinger"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.1.2"
+helpers.VERSION = "0.1.3"
 local H = helpers
 
 -------------------------------------------------------------------------------
@@ -238,6 +238,22 @@ local function subscribeChat()
     sub.ok = ok; sub.err = (not ok) and tostring(err) or nil; sub.count = sub.count + 1
     helpers.log("[" .. PLUGIN_NAME .. "] ChatMessage subscribe " .. (ok and "ok" or ("failed: " .. tostring(err))))
 end
+-- Auto-grant: chatAccess is declared required and optional, but required
+-- permissions are not applied by the client yet. If access is missing, ask
+-- once per load with the dev console commands (ppr, then ppe). Runs before
+-- the chat handler is subscribed; never repeated; never loops.
+local autoGrant = { tried = false, available = type(rawget(_G, "ExecuteConsoleCommand")) == "function", result = "not needed" }
+if hasChat() ~= true then
+    autoGrant.tried = true
+    if autoGrant.available then
+        local ok1 = pcall(ExecuteConsoleCommand, "ppr pinger")
+        local ok2 = pcall(ExecuteConsoleCommand, "ppe pinger chatAccess")
+        autoGrant.result = (ok1 and ok2) and "requested" or "console command failed"
+    else
+        autoGrant.result = "console commands unavailable"
+    end
+    helpers.log("[" .. PLUGIN_NAME .. "] chatAccess auto-grant: " .. autoGrant.result)
+end
 subscribeChat()
 sub.permWas = hasChat()
 helpers.subscribe(PLUGIN_NAME, "OptionalPermissionChanged", "pingerPerm", function(e)
@@ -323,7 +339,7 @@ local function permLine()
     if p == true then
         return H.lbl("Chat access: ") .. H.col(H.C_GOOD, "granted") .. tail
     elseif p == false then
-        return H.col(H.C_WARN, "Chat access OFF. In the console: ppr pinger, ppe pinger chatAccess, prl pinger.") .. tail
+        return H.col(H.C_WARN, "Chat access OFF (auto-grant " .. autoGrant.result .. "). In the console: ppr pinger, ppe pinger chatAccess, prl pinger.") .. tail
     end
     return H.col(H.C_WARN, "Chat access unknown.") .. tail
 end

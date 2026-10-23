@@ -17,41 +17,15 @@
 
 local PLUGIN_NAME = "Pinger"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.1.1"
+helpers.VERSION = "0.1.2"
 local H = helpers
 
 -------------------------------------------------------------------------------
 -- Channels (ChatType values from developer.runescape.com/rs/game/chat.html)
 -------------------------------------------------------------------------------
-local GROUPS = {
-    { key = "public",  name = "Public",       types = { 1, 2, 17 } },
-    { key = "private", name = "Private",      types = { 3, 7, 18 } },
-    { key = "friends", name = "Friends chat", types = { 9, 20 } },
-    { key = "clan",    name = "Clan",         types = { 41, 42 } },
-    { key = "guest",   name = "Guest clan",   types = { 44, 45 } },
-    { key = "group",   name = "Group",        types = { 22, 23, 24, 25 } },
-    { key = "trade",   name = "Trade/requests", types = { 100, 101, 102, 107, 108, 111, 113, 132 } },
-}
-local GROUP_OF = {}
-for i, g in ipairs(GROUPS) do for _, t in ipairs(g.types) do GROUP_OF[t] = i end end
--- never ping on our own plugin messages or the dev console
-local SKIP = { [33] = true, [96] = true, [98] = true, [99] = true }
--- outgoing private messages are always yours
-local OUTGOING = { [6] = true, [19] = true }
--- Filter options: 1 = All (incl. game messages), 2 = All player chat, 3.. = one group
-local FILTERS = { "All", "Players" }
-for _, g in ipairs(GROUPS) do FILTERS[#FILTERS + 1] = g.name end
-local function chanName(t)
-    local g = GROUP_OF[t]
-    return g and GROUPS[g].name or "Game"
-end
-local function passesFilter(f, t)
-    f = f or 1
-    if f == 1 then return true end
-    local g = GROUP_OF[t]
-    if f == 2 then return g ~= nil end
-    return g == f - 2
-end
+local M = require("match")
+local GROUPS, GROUP_OF, FILTERS = M.GROUPS, M.GROUP_OF, M.FILTERS
+local chanName, passesFilter = M.chanName, M.passesFilter
 
 -------------------------------------------------------------------------------
 -- Settings
@@ -96,30 +70,7 @@ end
 -------------------------------------------------------------------------------
 -- Text matching
 -------------------------------------------------------------------------------
--- lower case; tags removed; nbsp, '_' and '-' -> space; spaces collapsed
-local function normText(s)
-    local t = tostring(s or "")
-    t = t:gsub("<[^>]*>", "")
-    t = t:gsub("\194\160", " "):gsub("\160", " "):gsub("[_%-]", " ")
-    t = string.lower(t):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
-    return t
-end
-local function isWordChar(ch) return ch ~= nil and ch ~= "" and ch:match("[%w]") ~= nil end
-local function hasWord(hay, needle)
-    if needle == "" then return false end
-    local i = 1
-    while true do
-        local s, e = string.find(hay, needle, i, true)
-        if not s then return false end
-        if not isWordChar(hay:sub(s - 1, s - 1)) and not isWordChar(hay:sub(e + 1, e + 1)) then return true end
-        i = s + 1
-    end
-end
-local function matches(hay, needle, mode)
-    if needle == "" then return false end
-    if mode == "contains" then return string.find(hay, needle, 1, true) ~= nil end
-    return hasWord(hay, needle)
-end
+local normText = M.normText
 
 -------------------------------------------------------------------------------
 -- Local player name
@@ -226,11 +177,12 @@ end
 -------------------------------------------------------------------------------
 -- Chat handling (read-only)
 -------------------------------------------------------------------------------
-local recent = {}          -- newest first: { ts, chan, from, trig }
-local lastFire = {}        -- trigger table -> timestamp
-local seen = { count = 0, types = {} }
+local recent = {}          -- newest first: last 5 raw events { ts, chan, from, msg, reason, hit }
+local lastFire = {}        -- trigger table -> seconds
+local seen = { count = 0 }
 local refreshRecent, bindRows
 local window = nil
+local logicTick = 0
 
 local function fmtClock(ts)
     ts = math.tointeger(ts) or 0
@@ -238,45 +190,61 @@ local function fmtClock(ts)
     return string.format("%02d:%02d:%02d", d // 3600, (d % 3600) // 60, d % 60)
 end
 
+-- chatType may arrive as a number or as a ChatType enum value: resolve both.
+local CT_REV = nil
+local function typeNum(v)
+    local n = math.tointeger(v) or math.tointeger(tonumber(v) or nil)
+    if n then return n end
+    if CT_REV == nil then
+        CT_REV = {}
+        pcall(function() for k, x in pairs(ChatType) do CT_REV[#CT_REV + 1] = { x = x, n = math.tointeger(tonumber(x)) } end end)
+    end
+    for _, r in ipairs(CT_REV) do if r.x == v and r.n then return r.n end end
+    return -1
+end
+
 local function onChat(e)
     -- copy fields; the payload is never written to
     local msg, t, from, ts = "", -1, "", 0
-    pcall(function()
-        msg = tostring(e.chatMessage or "")
-        t = math.tointeger(e.chatType) or -1
-        from = tostring(e.senderNameUnfiltered or "")
-        ts = math.tointeger(e.timestamp) or 0
-    end)
+    pcall(function() msg = tostring(e.chatMessage or "") end)
+    pcall(function() t = typeNum(e.chatType) end)
+    pcall(function() from = tostring(e.senderNameUnfiltered or "") end)
+    if from == "" then pcall(function() from = tostring(e.senderNameSimple or "") end) end
+    pcall(function() ts = math.tointeger(e.timestamp) or 0 end)
     seen.count = seen.count + 1
-    seen.types[t] = true
-    if SKIP[t] then return end
     if myNorm == "" then readName() end
-    local fromN = normText(from)
-    local own = OUTGOING[t] or (myNorm ~= "" and fromN ~= "" and (fromN == myNorm or fromN:gsub(" ", "") == myTight))
-    if own and state.ignoreOwn then return end
-    local hay = normText(msg)
-    if hay == "" then return end
-    local hit = nil
-    local nt = state.name
-    if nt.on and myNorm ~= "" and passesFilter(nt.chan, t) then
-        if matches(hay, myNorm, nt.match) or (myTight ~= myNorm and matches(hay, myTight, nt.match)) then hit = nt end
-    end
-    if hit == nil then
-        for _, tr in ipairs(state.trigs) do
-            if tr.on and passesFilter(tr.chan, t) and matches(hay, normText(tr.text), tr.match) then hit = tr; break end
-        end
-    end
-    if hit == nil then return end
-    local now = ts > 0 and ts or (lastFire[hit] or 0) + 1000
-    if lastFire[hit] ~= nil and state.cooldown > 0 and now - lastFire[hit] < state.cooldown then return end
-    lastFire[hit] = now
-    local sid = soundOf(hit)
-    play(sid)
-    table.insert(recent, 1, { ts = ts, chan = chanName(t), from = from:gsub("<[^>]*>", ""), trig = hit == nt and ("Name: " .. tostring(myName or "?")) or hit.text })
-    while #recent > 3 do table.remove(recent) end
+    local now = ts > 0 and ts or (logicTick // 50)
+    local hit, reason = M.evaluate({ msg = msg, t = t, from = from, now = now }, {
+        name = state.name, trigs = state.trigs, ignoreOwn = state.ignoreOwn, cooldown = state.cooldown,
+        myNorm = myNorm, myTight = myTight, lastFire = lastFire })
+    if hit ~= nil then play((soundOf(hit))) end
+    table.insert(recent, 1, { ts = ts, chan = chanName(t), from = (from:gsub("<[^>]*>", "")), msg = (msg:gsub("<[^>]*>", "")), reason = reason, hit = hit ~= nil })
+    while #recent > 5 do table.remove(recent) end
     if window and refreshRecent then pcall(refreshRecent) end
 end
-helpers.subscribe(PLUGIN_NAME, "ChatMessage", "pingerChat", onChat)
+
+-- Subscription. Made at load, and made again whenever chatAccess turns on
+-- (ppe / OptionalPermissionChanged), on the next logic tick rather than
+-- inside the permission callback.
+local sub = { ok = false, err = nil, count = 0, permWas = nil, pending = false }
+local function subscribeChat()
+    pcall(function() Event.ChatMessage.Unsubscribe("pingerChat") end)
+    local ok, err = pcall(function()
+        Event.ChatMessage.Subscribe("pingerChat", function(e)
+            local okCb, errCb = pcall(onChat, e)
+            if not okCb then helpers.log("[" .. PLUGIN_NAME .. "] ERROR in ChatMessage: " .. tostring(errCb)) end
+        end)
+    end)
+    sub.ok = ok; sub.err = (not ok) and tostring(err) or nil; sub.count = sub.count + 1
+    helpers.log("[" .. PLUGIN_NAME .. "] ChatMessage subscribe " .. (ok and "ok" or ("failed: " .. tostring(err))))
+end
+subscribeChat()
+sub.permWas = hasChat()
+helpers.subscribe(PLUGIN_NAME, "OptionalPermissionChanged", "pingerPerm", function(e)
+    local nm, en = nil, nil
+    pcall(function() nm = tostring(e.permissionName); en = e.enabled end)
+    if nm and string.lower(nm) == "chataccess" and en == true then sub.pending = true end
+end)
 
 -------------------------------------------------------------------------------
 -- Panel
@@ -350,12 +318,14 @@ local function busLabel() return "Bus: " .. state.bus end
 
 local function permLine()
     local p = hasChat()
+    local subT = sub.ok and H.col(H.C_GOOD, "subscribed") or H.col(H.C_BAD, "not subscribed")
+    local tail = H.lbl("  Event: ") .. subT .. H.lbl("  events: ") .. H.val(seen.count)
     if p == true then
-        return H.lbl("Chat access: ") .. H.col(H.C_GOOD, "granted") .. H.lbl("  messages seen: ") .. H.val(seen.count)
+        return H.lbl("Chat access: ") .. H.col(H.C_GOOD, "granted") .. tail
     elseif p == false then
-        return H.col(H.C_WARN, "Chat access is off, so Pinger can't see chat. Allow chatAccess for Pinger (dev: ppe pinger chatAccess, then prl pinger).")
+        return H.col(H.C_WARN, "Chat access OFF. In the console: ppr pinger, ppe pinger chatAccess, prl pinger.") .. tail
     end
-    return H.col(H.C_WARN, "Chat access unknown (Plugin.HasPermission failed). Messages seen: " .. seen.count)
+    return H.col(H.C_WARN, "Chat access unknown.") .. tail
 end
 
 local function rebuildPick()
@@ -400,13 +370,14 @@ bindRows = function()
 end
 
 refreshRecent = function()
-    for r = 1, 3 do
+    for r = 1, 5 do
         local e = recent[r]
         local c = recentRows[r]
         if e then
-            helpers.setText(c, H.lbl(fmtClock(e.ts) .. "  ") .. H.val(e.chan) .. H.lbl("  " .. (e.from ~= "" and e.from or "(game)") .. "  ") .. H.gold(e.trig))
+            local res = e.hit and H.col(H.C_GOOD, e.reason) or H.lbl(e.reason)
+            helpers.setText(c, H.lbl(fmtClock(e.ts) .. " ") .. H.val(e.chan) .. H.lbl(" " .. (e.from ~= "" and e.from or "(game)") .. ": ") .. H.val(e.msg) .. H.lbl("  -> ") .. res)
         else
-            helpers.setText(c, r == 1 and H.lbl("No pings yet.") or "")
+            helpers.setText(c, r == 1 and H.lbl(seen.count == 0 and "No chat events received yet. If chat is moving and this stays empty, chat access is not reaching Pinger." or "") or "")
         end
     end
 end
@@ -500,7 +471,7 @@ local function layout()
         y = y + H.BTN_H + 8
         helpers.safe(function() recentHead:SetPos(COL_PAD, y) end); y = y + H.ROW_HEIGHT
         helpers.safe(function() recentDiv:SetPos(COL_PAD, y) end); y = y + 2
-        for r = 1, 3 do helpers.safe(function() recentRows[r]:SetPos(COL_PAD, y) end); y = y + H.ROW_HEIGHT end
+        for r = 1, 5 do helpers.safe(function() recentRows[r]:SetPos(COL_PAD, y) end); y = y + H.ROW_HEIGHT end
         bindRows(); refreshRecent()
     else
         helpers.safe(function() pBack:SetPos(COL_PAD, y); pSearch:SetPos(COL_PAD + 64 + GAP, y) end)
@@ -704,10 +675,16 @@ local function buildPanel(root)
     end)
     stopBtn = L(helpers.button(root, 0, 0, 64, H.BTN_H, "Stop", function() stopAll() end))
     helpers.setTip(stopBtn, "Stop any alert that is still playing.")
-    recentHead = L(newText(root, -2 * COL_PAD)); helpers.setText(recentHead, H.gold("Recent pings") .. H.lbl("  (game time, UTC)"))
+    recentHead = L(newText(root, -2 * COL_PAD)); helpers.setText(recentHead, H.gold("Diagnostics: last 5 chat events") .. H.lbl("  (game time UTC; hover for full text)"))
     recentDiv = L(newRect(root, { 0.78, 0.70, 0.52 }, 0.9))
     helpers.safe(function() recentDiv:SetSize(-2 * COL_PAD, 1, 1.0, 0.0) end)
-    for r = 1, 3 do recentRows[r] = L(newText(root, -2 * COL_PAD)); helpers.track(recentRows[r], "content", 2) end
+    for r = 1, 5 do
+        recentRows[r] = L(newText(root, -2 * COL_PAD)); helpers.track(recentRows[r], "content", 2)
+        helpers.setTip(recentRows[r], function()
+            local e = recent[r]; if not e then return nil end
+            return "[" .. e.chan .. "] " .. (e.from ~= "" and e.from or "(game)") .. ": " .. e.msg .. "  |  Result: " .. e.reason
+        end)
+    end
 
     -- picker view -------------------------------------------------------------
     pBack = P(helpers.button(root, 0, 0, 64, H.BTN_H, "Back", closePicker))
@@ -774,6 +751,14 @@ local tick = 0
 helpers.subscribe(PLUGIN_NAME, "Logic", "pgLogic", function()
     helpers.tickToast()
     tick = tick + 1
+    logicTick = logicTick + 1
+    if sub.pending then sub.pending = false; subscribeChat() end
+    if tick % 50 == 0 then
+        local p = hasChat()
+        if p == true and sub.permWas ~= true then subscribeChat() end
+        sub.permWas = p
+        if window and view == "list" then pcall(function() helpers.setText(permText, permLine()) end) end
+    end
     if scanNext ~= nil then
         if scanStep() then if window and view == "pick" then rebuildPick(); bindPick() end end
     end
@@ -825,6 +810,7 @@ helpers.log("[" .. PLUGIN_NAME .. "] loaded")
 
 function PluginShutdown()
     pcall(function() Event.ChatMessage.Unsubscribe("pingerChat") end)
+    pcall(function() Event.OptionalPermissionChanged.Unsubscribe("pingerPerm") end)
     stopAll()
     save()
     helpers.destroyToast()

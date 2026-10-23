@@ -2,9 +2,9 @@
 
 Plays an alert sound when your name or one of your own trigger words appears in RuneScape chat. Each trigger has its own game sound, on/off switch, channel filter (public, private, friends chat, clan, guest clan, group, trade/requests) and whole-word or contains matching. Ignore your own messages, per-trigger cooldown, audio bus picker. Read-only: never changes or sends chat.
 
-Current version: 0.1.1
+Current version: 0.1.2
 
-- Needs the optional `chatAccess` permission to see chat. In the developer client: `ppe pinger chatAccess`, then `prl pinger`.
+- Needs the optional `chatAccess` permission to see chat. In the developer client: `ppr pinger`, `ppe pinger chatAccess`, then `prl pinger`.
 - mod.io page: not published yet.
 
 ## Report a bug or request a feature

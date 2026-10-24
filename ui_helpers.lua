@@ -389,7 +389,7 @@ local function makeDraggable(handle, target, onEnd, resize)
                  ow = target.width, oh = target.height, resize = resize,
                  moved = false, idle = 0, onEnd = onEnd }
         pcall(function() target:MoveToFront() end)
-        if helpers.afterRaise then pcall(helpers.afterRaise) end
+        if helpers.afterRaise then pcall(helpers.afterRaise) end; if helpers.ddFront then pcall(helpers.ddFront) end
     end)
     handle:Subscribe(ui.Hook.ONHOLD, "dragHold", function()
         if drag ~= nil then drag.idle = 0 end
@@ -469,7 +469,7 @@ local function applyCollapsed()
         win.box.hidden = closed or win.state.collapsed == true
         win.icon.hidden = closed or win.state.collapsed ~= true
         if win.state.collapsed then win.icon:MoveToFront() else win.box:MoveToFront() end
-        if helpers.afterRaise then pcall(helpers.afterRaise) end
+        if helpers.afterRaise then pcall(helpers.afterRaise) end; if helpers.ddFront then pcall(helpers.ddFront) end
     end)
 end
 
@@ -1043,7 +1043,7 @@ function helpers.raiseWindow()
         if win.state ~= nil and win.state.collapsed and win.icon ~= nil then win.icon:MoveToFront()
         elseif win.box ~= nil then win.box:MoveToFront() end
     end)
-    if helpers.afterRaise then pcall(helpers.afterRaise) end
+    if helpers.afterRaise then pcall(helpers.afterRaise) end; if helpers.ddFront then pcall(helpers.ddFront) end
 end
 function helpers.raiseOnClick(c)
     if c == nil then return end
@@ -1193,7 +1193,7 @@ function helpers.tickHover()
         if not hov.shown then
             hoverBox.hidden = false
             hoverBox:MoveToFront()
-            if helpers.afterRaise then pcall(helpers.afterRaise) end
+            if helpers.afterRaise then pcall(helpers.afterRaise) end; if helpers.ddFront then pcall(helpers.ddFront) end
             hov.shown = true
         end
     end)
@@ -1503,7 +1503,7 @@ function helpers.winBox() return win.box end
 function helpers.winIcon() return win.icon end
 function helpers.raiseFront()
     pcall(function() if win.state ~= nil and win.state.collapsed and win.icon ~= nil then win.icon:MoveToFront() elseif win.box ~= nil then win.box:MoveToFront() end end)
-    if helpers.afterRaise then pcall(helpers.afterRaise) end
+    if helpers.afterRaise then pcall(helpers.afterRaise) end; if helpers.ddFront then pcall(helpers.ddFront) end
 end
 function helpers.isCollapsed() return win.state ~= nil and win.state.collapsed == true end
 
@@ -1684,6 +1684,22 @@ function helpers.commas(n) local s = string.format("%d", math.floor(tonumber(n) 
 ]]
 helpers.DROPDOWN_ROWS = 8
 local ddOpen = nil
+-- 0.1.8 dropdown fix: the opening click is ignored by the list for a short
+-- guard time, the box toggles at most once per guard time (no down+up
+-- double toggle), and the list is re-raised after any window raise.
+local ddGuardUntil = 0
+local DD_GUARD = 0.30
+local ddTick = 0   -- fallback clock (Logic ticks) if os.clock is unavailable
+local function ddNow()
+    local ok, t = pcall(function() return os.clock() end)
+    if ok and type(t) == "number" then return t end
+    return ddTick * 0.05
+end
+function helpers.ddFront()
+    local d = ddOpen
+    if d == nil or d.listParts == nil then return end
+    for _, c in ipairs(d.listParts) do pcall(function() c:MoveToFront() end) end
+end
 local DD_STONE = Vector4.new(0.17, 0.15, 0.12, 1.0)
 local DD_EDGE  = Vector4.new(150/255, 126/255, 62/255, 1.0)
 local DD_HOVER = Vector4.new(0.42, 0.33, 0.14, 1.0)
@@ -1727,8 +1743,10 @@ function helpers.dropdown(parent, x, y, w, h, opt)
     helpers.blockClicks(o.box)
     pcall(function()
         o.box:Subscribe(ui.Hook.ONCLICK, "dd_" .. tostring(opt.name or ""), function()
-            pcall(helpers.raiseWindow)
-            if ddOpen == o then helpers.closeDropdown() else o:open() end
+            if ddNow() < ddGuardUntil then return end   -- same click / bounce
+            if ddOpen == o then helpers.closeDropdown(); ddGuardUntil = ddNow() + DD_GUARD; return end
+            pcall(helpers.raiseWindow)   -- raise the panel BEFORE building the list
+            o:open()
         end)
     end)
     if opt.tip then helpers.setTip(o.box, opt.tip) end
@@ -1740,7 +1758,8 @@ function helpers.dropdown(parent, x, y, w, h, opt)
         helpers.setText(self.text, helpers.val(fit))
     end
     function o:SetPos(nx, ny, px, py)
-        local moved = nx ~= self.x or ny ~= self.y or (px or 0) ~= self.px or (py or 0) ~= self.py
+        local function far(a, b) return math.abs((tonumber(a) or 0) - (tonumber(b) or 0)) > 1 end
+        local moved = self.x ~= nil and (far(nx, self.x) or far(ny, self.y) or (px or 0) ~= self.px or (py or 0) ~= self.py)
         self.x, self.y, self.px, self.py = nx, ny, px or 0, py or 0
         local P, Q = self.px, self.py
         helpers.safe(function()
@@ -1786,6 +1805,7 @@ function helpers.dropdown(parent, x, y, w, h, opt)
         local cur = self.opt.get() or 1
         if n > vis then self.scroll = math.max(0, math.min(n - vis, cur - math.ceil(vis / 2))) else self.scroll = 0 end
         ddOpen = self
+        ddGuardUntil = ddNow() + DD_GUARD
         self.listParts, self.rows = {}, {}
         local function keep(c) if c ~= nil then table.insert(self.listParts, c) end; return c end
         -- full-screen catcher: a click anywhere outside the list closes it
@@ -1793,7 +1813,10 @@ function helpers.dropdown(parent, x, y, w, h, opt)
             local cat = keep(ui.Text.new(top))
             cat:SetPos(0, 0); cat:SetSize(0, 0, 1.0, 1.0); cat.content = ""
             helpers.blockClicks(cat)
-            cat:Subscribe(ui.Hook.ONCLICK, "ddOut", function() helpers.closeDropdown() end)
+            cat:Subscribe(ui.Hook.ONCLICK, "ddOut", function()
+                if ddNow() < ddGuardUntil then return end   -- the click that opened it
+                helpers.closeDropdown(); ddGuardUntil = ddNow() + DD_GUARD
+            end)
         end)
         local bg = keep(ddRect(top, DD_STONE, true))
         local edge = keep(ddRect(top, DD_EDGE, false))
@@ -1815,6 +1838,7 @@ function helpers.dropdown(parent, x, y, w, h, opt)
             helpers.blockClicks(row.t)
             pcall(function()
                 row.t:Subscribe(ui.Hook.ONCLICK, "ddPick", function()
+                    if ddNow() < ddGuardUntil then return end
                     local i = self.scroll + r
                     if i >= 1 and i <= #ddOptions(self) then self:pick(i) end
                 end)
@@ -1831,6 +1855,7 @@ function helpers.dropdown(parent, x, y, w, h, opt)
             mk("v", ly + listH - 20, vis)
         end
         self:fill()
+        helpers.ddFront()
     end
     function o:fill()
         if self.rows == nil then return end
@@ -1858,6 +1883,7 @@ function helpers.dropdown(parent, x, y, w, h, opt)
 end
 -- Hover highlight for the open list (and close it if its box went away).
 helpers.subscribe("ui_helpers", "Logic", "uiDropdown", function()
+    ddTick = ddTick + 1
     local d = ddOpen
     if d == nil or d.rows == nil then return end
     local hid = false

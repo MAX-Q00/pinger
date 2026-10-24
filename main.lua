@@ -17,7 +17,7 @@
 
 local PLUGIN_NAME = "Pinger"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.1.7"
+helpers.VERSION = "0.1.8"
 local H = helpers
 
 -------------------------------------------------------------------------------

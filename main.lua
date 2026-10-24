@@ -17,7 +17,7 @@
 
 local PLUGIN_NAME = "Pinger"
 local helpers = require("ui_helpers")
-helpers.VERSION = "0.1.6"
+helpers.VERSION = "0.1.7"
 local H = helpers
 
 -------------------------------------------------------------------------------
@@ -238,21 +238,20 @@ local function subscribeChat()
     sub.ok = ok; sub.err = (not ok) and tostring(err) or nil; sub.count = sub.count + 1
     helpers.log("[" .. PLUGIN_NAME .. "] ChatMessage subscribe " .. (ok and "ok" or ("failed: " .. tostring(err))))
 end
--- Auto-grant: chatAccess is declared required and optional, but required
--- permissions are not applied by the client yet. If access is missing, ask
--- once per load with the dev console commands (ppr, then ppe). Runs before
--- the chat handler is subscribed; never repeated; never loops.
-local autoGrant = { tried = false, available = type(rawget(_G, "ExecuteConsoleCommand")) == "function", result = "not needed" }
-if hasChat() ~= true then
-    autoGrant.tried = true
-    if autoGrant.available then
-        local ok1 = pcall(ExecuteConsoleCommand, "ppr pinger")
-        local ok2 = pcall(ExecuteConsoleCommand, "ppe pinger chatAccess")
-        autoGrant.result = (ok1 and ok2) and "requested" or "console command failed"
+-- 0.1.7: chat access is granted only when the user clicks "Enable chat access"
+-- in the panel. No console command ever runs at load.
+local grant = { available = type(rawget(_G, "ExecuteConsoleCommand")) == "function", result = nil, btn = nil }
+local function requestChat()
+    if hasChat() == true then grant.result = "already granted"; return end
+    if not grant.available then grant.result = "console commands unavailable"
     else
-        autoGrant.result = "console commands unavailable"
+        local ok1, e1 = pcall(ExecuteConsoleCommand, "ppr pinger")
+        local ok2, e2 = false, nil
+        if ok1 then ok2, e2 = pcall(ExecuteConsoleCommand, "ppe pinger chatAccess") end
+        if ok1 and ok2 then grant.result = "requested"
+        else grant.result = "failed: " .. tostring(ok1 and e2 or e1) end
     end
-    helpers.log("[" .. PLUGIN_NAME .. "] chatAccess auto-grant: " .. autoGrant.result)
+    helpers.log("[" .. PLUGIN_NAME .. "] chatAccess request (click): " .. grant.result)
 end
 subscribeChat()
 sub.permWas = hasChat()
@@ -350,7 +349,12 @@ local function permLine()
     if p == true then
         return H.lbl("Chat access: ") .. H.col(H.C_GOOD, "granted") .. tail
     elseif p == false then
-        return H.col(H.C_WARN, "Chat access OFF (auto-grant " .. autoGrant.result .. "). In the console: ppr pinger, ppe pinger chatAccess, prl pinger.") .. tail
+        if grant.result == "requested" then
+            return H.col(H.C_WARN, "Chat access requested. If it stays OFF, run prl pinger.") .. tail
+        elseif grant.result then
+            return H.col(H.C_BAD, "Chat access OFF (" .. grant.result .. "). Console: ppr pinger, ppe pinger chatAccess.") .. tail
+        end
+        return H.col(H.C_WARN, "Chat access OFF. Pinger hears no chat until you enable it.") .. tail
     end
     return H.col(H.C_WARN, "Chat access unknown.") .. tail
 end
@@ -368,6 +372,11 @@ bindRows = function()
     helpers.setText(statusText, H.lbl("Your name: ") .. (myName and H.gold(myName) or H.col(H.C_WARN, "not detected yet (log in)"))
         .. H.lbl("   Triggers: ") .. H.val(trigCount()))
     helpers.setText(permText, permLine())
+    helpers.safe(function()
+        local need = hasChat() ~= true
+        grant.btn.hidden = (view ~= "list") or not need
+        permText:SetSize(-(2 * COL_PAD + (need and (140 + GAP) or 0)), H.ROW_HEIGHT, 1.0, 0.0)
+    end)
     for r = 1, ROWS do
         local c = rows[r]
         local i = (page - 1) * ROWS + r
@@ -458,7 +467,9 @@ local function layout()
     if pHandle then pHandle:setHidden(isList) end
     if isList then
         helpers.safe(function() statusText:SetPos(COL_PAD, y) end); y = y + H.ROW_HEIGHT
-        helpers.safe(function() permText:SetPos(COL_PAD, y) end); y = y + H.ROW_HEIGHT + 4
+        helpers.safe(function() permText:SetPos(COL_PAD, y); grant.btn:SetPos(-(COL_PAD + 140), y - 2, 1.0, 0.0) end)
+        helpers.safe(function() grant.btn.hidden = hasChat() == true end)
+        y = y + H.ROW_HEIGHT + 4
         helpers.safe(function() addField:SetPos(COL_PAD, y); addBtn:SetPos(-(COL_PAD + 90), y, 1.0, 0.0) end)
         y = y + H.BTN_H + 2
         helpers.safe(function() addMsg:SetPos(COL_PAD, y) end); y = y + H.ROW_HEIGHT
@@ -607,6 +618,10 @@ local function buildPanel(root)
     statusText = L(newText(root, -2 * COL_PAD))
     permText = L(newText(root, -2 * COL_PAD)); helpers.track(permText, "content", 2)
     helpers.setTip(permText, "Pinger reads chat through the chatAccess permission. Without it the game sends no chat events to the plugin. Read-only: it never changes or sends chat.")
+    grant.btn = L(helpers.button(root, 0, 0, 140, H.BTN_H, "Enable chat access", function()
+        helpers.safe(requestChat); bindRows()
+    end))
+    helpers.setTip(grant.btn, "Runs the console commands ppr pinger and ppe pinger chatAccess, once, only when you click. Pinger only reads chat; it never sends or changes it.")
     addField = L(helpers.input(root, 0, 0, 200, H.BTN_H, "Add a word or phrase that should ping you"))
     helpers.safe(function() addField:SetSize(-(2 * COL_PAD + 90 + GAP), H.BTN_H, 1.0, 0.0) end)
     helpers.setTip(addField, "Type a word or phrase (up to 40 characters), then press Add trigger. Case doesn't matter; spaces, _ and - count as the same.")
